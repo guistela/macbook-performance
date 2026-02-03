@@ -16,12 +16,12 @@ struct ContentView: View {
                     Label("Launcher", systemImage: "app.dashed")
                 }
             
-            OptimizationView()
+            OptimizationView(monitor: monitor)
                 .tabItem {
                     Label("Optimization", systemImage: "wrench.and.screwdriver")
                 }
         }
-        .frame(minWidth: 600, minHeight: 500)
+        .frame(minWidth: 400, maxWidth: .infinity, minHeight: 400, maxHeight: .infinity)
     }
 }
 
@@ -30,9 +30,17 @@ struct MonitorView: View {
     
     var body: some View {
         ScrollView {
-            VStack(spacing: 20) {
+            let columns = [
+                GridItem(.adaptive(minimum: 350, maximum: .infinity), spacing: 20)
+            ]
+            
+            LazyVGrid(columns: columns, spacing: 20) {
                 MetricChart(title: "CPU Usage", value: monitor.cpuUsage, data: monitor.cpuHistory)
                 MetricChart(title: "Memory Usage", value: monitor.memoryUsage, data: monitor.memoryHistory)
+                MetricChart(title: "GPU Usage", value: monitor.gpuUsage, data: monitor.gpuHistory)
+                MetricChart(title: "CPU Temperature", value: monitor.cpuTemperature, data: monitor.cpuTempHistory, unit: "°C", maxValue: 110)
+                
+                MetricChart(title: "Fan Speed", value: Double(monitor.fanSpeed), data: [], unit: " RPM", maxValue: 7000)
                 
                 VStack(alignment: .leading) {
                     Text("Disk I/O")
@@ -45,15 +53,106 @@ struct MonitorView: View {
                 .padding()
                 .background(Color(nsColor: .controlBackgroundColor))
                 .cornerRadius(10)
-                
-                MetricChart(title: "GPU Usage", value: monitor.gpuUsage, data: monitor.gpuHistory)
             }
             .padding()
         }
     }
 }
 
-// ... MetricChart ...
+
+struct MetricChart: View {
+    let title: String
+    let value: Double
+    let data: [MetricPoint]
+    var unit: String = "%"
+    var maxValue: Double = 100
+    
+    var statusColor: Color {
+        if unit == "°C" {
+            switch value {
+            case 0..<75: return .green
+            case 75..<90: return .yellow
+            default: return .red
+            }
+        } else {
+            switch value {
+            case 0..<60: return .green
+            case 60..<85: return .yellow
+            default: return .red
+            }
+        }
+    }
+    
+    var statusText: String {
+        if unit == "°C" {
+            switch value {
+            case 0..<75: return "OK"
+            case 75..<90: return "WARM"
+            default: return "HOT"
+            }
+        } else {
+            switch value {
+            case 0..<60: return "OK"
+            case 60..<85: return "MED"
+            default: return "BAD"
+            }
+        }
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading) {
+            HStack {
+                Text(title)
+                    .font(.headline)
+                
+                Spacer()
+                
+                Text(statusText)
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(statusColor.opacity(0.2))
+                    .foregroundColor(statusColor)
+                    .cornerRadius(4)
+                
+                if unit == " RPM" {
+                    Text("\(Int(value))\(unit)")
+                        .font(.title2)
+                        .monospacedDigit()
+                } else {
+                    Text(unit == "°C" ? String(format: "%.1f%@", value, unit) : "\(Int(value))\(unit)")
+                        .font(.title2)
+                        .monospacedDigit()
+                }
+            }
+            
+            Chart(data) { point in
+                LineMark(
+                    x: .value("Time", point.date),
+                    y: .value("Value", point.value)
+                )
+                .foregroundStyle(statusColor)
+                .interpolationMethod(.catmullRom)
+                
+                AreaMark(
+                    x: .value("Time", point.date),
+                    y: .value("Value", point.value)
+                )
+                .foregroundStyle(LinearGradient(colors: [statusColor.opacity(0.5), statusColor.opacity(0.05)], startPoint: .top, endPoint: .bottom))
+                .interpolationMethod(.catmullRom)
+            }
+            .chartYScale(domain: 0...maxValue)
+            .chartXAxis(.hidden)
+            .opacity(data.isEmpty ? 0 : 1) // Hide chart if no data (e.g. for Fan Speed)
+            .frame(height: data.isEmpty ? 0 : 100)
+        }
+        .padding()
+        .background(Color(nsColor: .controlBackgroundColor))
+        .cornerRadius(10)
+    }
+}
+
 
 struct DiskChart: View {
     let title: String
@@ -183,6 +282,7 @@ struct LauncherView: View {
 }
 
 struct OptimizationView: View {
+    @ObservedObject var monitor: SystemMonitor
     @State private var showingAlert = false
     @State private var alertMessage = ""
     
@@ -231,7 +331,27 @@ struct OptimizationView: View {
                     .padding()
                 }
                 
-                Text("Note: 'Force Dedicated GPU' and 'Purge Memory' require Admin privileges (sudo) and may verify via Terminal or prompt.")
+                GroupBox(label: Label("Thermal Management", systemImage: "thermometer.sun")) {
+                    VStack(alignment: .leading, spacing: 15) {
+                        Text("Forcing fans to maximum speed can help lower temperatures quickly.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        HStack {
+                            Text("Turbo Mode (Fans @ Max)")
+                                .font(.headline)
+                            Spacer()
+                            Toggle("", isOn: Binding(
+                                get: { monitor.isTurboModeByte },
+                                set: { _ in monitor.toggleTurboMode() }
+                            ))
+                            .toggleStyle(.switch)
+                        }
+                    }
+                    .padding()
+                }
+                
+                Text("Note: 'Force Dedicated GPU', 'Thermal Controls' and 'Purge Memory' require Admin privileges (sudo) and may verify via Terminal or prompt.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -245,46 +365,42 @@ struct OptimizationView: View {
     }
     
     func runPmset(arg: String) {
-        // sudo pmset -a gpuswitch <arg>
-        // 0 = Force Integrated
-        // 1 = Force Dedicated
-        // 2 = Auto
-        
-        let script = "do shell script \"pmset -a gpuswitch \(arg)\" with administrator privileges"
-        let task = NSAppleScript(source: script)
-        var error: NSDictionary?
+        // Run on background to avoid blocking. Create NSAppleScript INSIDE the block to avoid capturing non-Sendable types.
+        let scriptSource = "do shell script \"pmset -a gpuswitch \(arg)\" with administrator privileges"
         
         DispatchQueue.global(qos: .userInitiated).async {
-            task?.executeAndReturnError(&error)
+            let task = NSAppleScript(source: scriptSource)
+            var errorDict: NSDictionary?
+            let success = task?.executeAndReturnError(&errorDict) != nil
+            let errorMessage = errorDict?.description
             
             DispatchQueue.main.async {
-                if let error = error {
-                    alertMessage = "Failed to set graphics mode: \(error)"
+                if success {
+                    self.alertMessage = "Graphics mode updated successfully."
                 } else {
-                    alertMessage = "Graphics mode updated successfully."
+                    self.alertMessage = "Failed to set graphics mode: \(errorMessage ?? "Unknown error")"
                 }
-                showingAlert = true
+                self.showingAlert = true
             }
         }
     }
     
     func purgeMemory() {
-        // Using AppleScript to request privileges for purge if needed, or just try run
-        // 'purge' usually requires root.
-        let script = "do shell script \"purge\" with administrator privileges"
-        let task = NSAppleScript(source: script)
-        var error: NSDictionary?
+        let scriptSource = "do shell script \"purge\" with administrator privileges"
         
         DispatchQueue.global(qos: .userInitiated).async {
-            task?.executeAndReturnError(&error)
+            let task = NSAppleScript(source: scriptSource)
+            var errorDict: NSDictionary?
+            let success = task?.executeAndReturnError(&errorDict) != nil
+            let errorMessage = errorDict?.description
             
             DispatchQueue.main.async {
-                if let error = error {
-                    alertMessage = "Error running purge: \(error)"
+                if success {
+                    self.alertMessage = "Memory purged successfully."
                 } else {
-                    alertMessage = "Memory purged successfully."
+                    self.alertMessage = "Error running purge: \(errorMessage ?? "Unknown error")"
                 }
-                showingAlert = true
+                self.showingAlert = true
             }
         }
     }

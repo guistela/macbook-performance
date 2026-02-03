@@ -18,6 +18,9 @@ class SystemMonitor: ObservableObject {
     @Published var diskReadSpeed: String = "0 B/s"
     @Published var diskWriteSpeed: String = "0 B/s"
     @Published var gpuUsage: Double = 0.0
+    @Published var cpuTemperature: Double = 0.0
+    @Published var fanSpeed: Int = 0
+    @Published var isTurboModeByte: Bool = false // Tracks if manual mode is on
     
     // History for Charts
     @Published var cpuHistory: [MetricPoint] = []
@@ -25,6 +28,7 @@ class SystemMonitor: ObservableObject {
     @Published var diskReadHistory: [MetricPoint] = []
     @Published var diskWriteHistory: [MetricPoint] = []
     @Published var gpuHistory: [MetricPoint] = []
+    @Published var cpuTempHistory: [MetricPoint] = []
     
     private let maxHistoryPoints = 60
     private var timer: Timer?
@@ -37,6 +41,8 @@ class SystemMonitor: ObservableObject {
     private var previousDiskWrite: UInt64 = 0
     private var lastDiskCheckTime: TimeInterval = 0
     
+    private let smc = SMC()
+    
     init() {
         startMonitoring()
     }
@@ -47,6 +53,8 @@ class SystemMonitor: ObservableObject {
         updateMemoryUsage()
         updateDiskIO()
         updateGPUUsage()
+        updateCPUTemperature()
+        updateFanSpeed()
         
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -54,6 +62,8 @@ class SystemMonitor: ObservableObject {
                 self?.updateMemoryUsage()
                 self?.updateDiskIO()
                 self?.updateGPUUsage()
+                self?.updateCPUTemperature()
+                self?.updateFanSpeed()
             }
         }
     }
@@ -253,6 +263,29 @@ class SystemMonitor: ObservableObject {
             self.gpuUsage = maxUsage
             self.addToHistory(&self.gpuHistory, value: maxUsage)
         }
+    }
+    
+    private func updateCPUTemperature() {
+        if let temp = smc.getCpuTemperature() {
+            DispatchQueue.main.async {
+                self.cpuTemperature = temp
+                self.addToHistory(&self.cpuTempHistory, value: temp)
+            }
+        }
+    }
+    
+    private func updateFanSpeed() {
+        if let speed = smc.getFanSpeed() {
+            DispatchQueue.main.async {
+                self.fanSpeed = speed
+            }
+        }
+    }
+    
+    @MainActor
+    func toggleTurboMode() {
+        isTurboModeByte.toggle()
+        smc.setFanTurbo(isTurboModeByte)
     }
     
     deinit {
