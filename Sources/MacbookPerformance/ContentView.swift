@@ -35,12 +35,18 @@ struct MonitorView: View {
             ]
             
             LazyVGrid(columns: columns, spacing: 20) {
-                MetricChart(title: "CPU Usage", value: monitor.cpuUsage, data: monitor.cpuHistory)
-                MetricChart(title: "Memory Usage", value: monitor.memoryUsage, data: monitor.memoryHistory)
+                MetricChart(title: "CPU Usage", value: monitor.cpuUsage, data: monitor.cpuHistory, topApps: monitor.topCPUApps)
+                MetricChart(title: "Memory Usage", value: monitor.memoryUsage, data: monitor.memoryHistory, topApps: monitor.topMemoryApps)
                 MetricChart(title: "GPU Usage", value: monitor.gpuUsage, data: monitor.gpuHistory)
                 MetricChart(title: "CPU Temperature", value: monitor.cpuTemperature, data: monitor.cpuTempHistory, unit: "°C", maxValue: 110)
                 
-                MetricChart(title: "Fan Speed", value: Double(monitor.fanSpeed), data: [], unit: " RPM", maxValue: 7000)
+                if monitor.fanSpeeds.isEmpty {
+                     MetricChart(title: "Fan Speed", value: 0, data: [], unit: " RPM", maxValue: 7000)
+                } else {
+                    ForEach(Array(monitor.fanSpeeds.enumerated()), id: \.offset) { index, speed in
+                        MetricChart(title: "Fan \(index + 1) Speed", value: Double(speed), data: [], unit: " RPM", maxValue: 7000)
+                    }
+                }
                 
                 VStack(alignment: .leading) {
                     Text("Disk I/O")
@@ -66,6 +72,7 @@ struct MetricChart: View {
     let data: [MetricPoint]
     var unit: String = "%"
     var maxValue: Double = 100
+    var topApps: [(String, Double)] = []
     
     var statusColor: Color {
         if unit == "°C" {
@@ -146,6 +153,25 @@ struct MetricChart: View {
             .chartXAxis(.hidden)
             .opacity(data.isEmpty ? 0 : 1) // Hide chart if no data (e.g. for Fan Speed)
             .frame(height: data.isEmpty ? 0 : 100)
+            
+            if !topApps.isEmpty {
+                Divider()
+                VStack(spacing: 4) {
+                    ForEach(topApps, id: \.0) { app in
+                        HStack {
+                            Text(app.0)
+                                .font(.caption2)
+                                .lineLimit(1)
+                            Spacer()
+                            Text(String(format: "%.1f%%", app.1))
+                                .font(.caption2)
+                                .monospacedDigit()
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                .padding(.top, 4)
+            }
         }
         .padding()
         .background(Color(nsColor: .controlBackgroundColor))
