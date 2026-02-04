@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import Darwin
 import IOKit
+import CSMC_T2
 
 struct MetricPoint: Identifiable {
     let id = UUID()
@@ -18,8 +19,17 @@ class SystemMonitor: ObservableObject {
     @Published var diskReadSpeed: String = "0 B/s"
     @Published var diskWriteSpeed: String = "0 B/s"
     @Published var gpuUsage: Double = 0.0
-    @Published var cpuTemperature: Double = 0.0
-    @Published var fanSpeed: Int = 0
+    @Published public var cpuTemperature: Double = 0.0
+    @Published public var fanSpeeds: [Int] = []
+    
+    // Top Apps
+    @Published var topCPUApps: [(String, Double)] = []
+    @Published var topMemoryApps: [(String, Double)] = []
+    // @Published var topGPUApps: [(String, Double)] = [] // GPU per app is hard without private APIs
+    
+    private var lastThermalUpdate: Date = .distantPast
+    private var lastTopAppsUpdate: Date = .distantPast
+    
     @Published var isTurboModeByte: Bool = false // Tracks if manual mode is on
     
     // History for Charts
@@ -41,7 +51,6 @@ class SystemMonitor: ObservableObject {
     private var previousDiskWrite: UInt64 = 0
     private var lastDiskCheckTime: TimeInterval = 0
     
-    private let smc = SMC()
     
     init() {
         startMonitoring()
@@ -53,8 +62,8 @@ class SystemMonitor: ObservableObject {
         updateMemoryUsage()
         updateDiskIO()
         updateGPUUsage()
-        updateCPUTemperature()
-        updateFanSpeed()
+        updateThermalData()
+        updateTopApps()
         
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -62,8 +71,8 @@ class SystemMonitor: ObservableObject {
                 self?.updateMemoryUsage()
                 self?.updateDiskIO()
                 self?.updateGPUUsage()
-                self?.updateCPUTemperature()
-                self?.updateFanSpeed()
+                self?.updateThermalData()
+                self?.updateTopApps()
             }
         }
     }
@@ -265,28 +274,123 @@ class SystemMonitor: ObservableObject {
         }
     }
     
-    private func updateCPUTemperature() {
-        if let temp = smc.getCpuTemperature() {
-            DispatchQueue.main.async {
-                self.cpuTemperature = temp
-                self.addToHistory(&self.cpuTempHistory, value: temp)
+    private func updateThermalData() {
+        // Only update thermal data every 5 seconds as powermetrics is expensive
+        if Date().timeIntervalSince(lastThermalUpdate) < 5.0 { return }
+        
+        DispatchQueue.global(qos: .background).async {
+            if let data = PowerMetricsReader.read() {
+                DispatchQueue.main.async {
+                    self.cpuTemperature = data.cpuTemp
+                    self.fanSpeeds = data.fanSpeeds
+                    self.addToHistory(&self.cpuTempHistory, value: data.cpuTemp)
+                    self.lastThermalUpdate = Date()
+                }
+            }
+        }
+    }
+
+    private func updateTopApps() {
+        // Update top apps every 3 seconds to avoid too much overhead
+        if Date().timeIntervalSince(lastTopAppsUpdate) < 3.0 { return }
+        lastTopAppsUpdate = Date()
+        
+        // Parsing helper
+        func parsePSOutput(_ output: String) -> [(String, Double)] {
+            var apps: [(String, Double)] = []
+            let lines = output.components(separatedBy: .newlines)
+            for line in lines {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard !trimmed.isEmpty else { continue }
+                
+                // Expected format: " 12.3 Process Name" (percentage first)
+                let components = trimmed.components(separatedBy: .whitespaces)
+                if let first = components.first, let value = Double(first) {
+                    // Reassemble the name (which might have spaces)
+                    // Drop the first which is the value
+                    // The rest is the name
+                    // Wait, `components(separatedBy: .whitespaces)` might give empty strings if multiple spaces
+                    
+                    // Let's rely on regex or careful splitting.
+                    // Or just use index of first space.
+                    if let firstSpaceIndex = trimmed.firstIndex(of: " ") {
+                        let name = String(trimmed[trimmed.index(after: firstSpaceIndex)...]).trimmingCharacters(in: .whitespaces)
+                        apps.append((name, value))
+                    }
+                }
+            }
+            return apps
+        }
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            // Top CPU
+            // ps -Aceo pcpu,comm -r | head -n 4 (1 header + 3 apps)
+            let cpuTask = Process()
+            cpuTask.launchPath = "/bin/ps"
+            cpuTask.arguments = ["-Aceo", "pcpu,comm", "-r"]
+            let cpuPipe = Pipe()
+            cpuTask.standardOutput = cpuPipe
+            
+            // Top Memory
+            // ps -Aceo pmem,comm -m | head -n 4
+            let memTask = Process()
+            memTask.launchPath = "/bin/ps"
+            memTask.arguments = ["-Aceo", "pmem,comm", "-m"]
+            let memPipe = Pipe()
+            memTask.standardOutput = memPipe
+            
+            do {
+                try cpuTask.run()
+                try memTask.run()
+                
+                // Read and truncate
+                // We use `head` in shell usually, but here we can just read first N lines manually in swift to avoid piping to head
+                
+                let cpuData = cpuPipe.fileHandleForReading.readDataToEndOfFile()
+                let memData = memPipe.fileHandleForReading.readDataToEndOfFile()
+                
+                if let cpuStr = String(data: cpuData, encoding: .utf8),
+                   let memStr = String(data: memData, encoding: .utf8) {
+                    
+                    var newCpuApps = parsePSOutput(cpuStr)
+                    var newMemApps = parsePSOutput(memStr)
+                    
+                    // Take top 3 (skip header row which usually fails parse or we drop first manually)
+                    // "pcpu" or "pmem" (header) doubles would be 0.0 or fail.
+                    // Our parser expects Double at start. Header "%CPU" won't parse as double 0.0 usually unless encoded weirdly.
+                    // Actually Double("%CPU") is nil. So our parser skips header automatically.
+                    
+                    newCpuApps = Array(newCpuApps.prefix(3))
+                    newMemApps = Array(newMemApps.prefix(3))
+                    
+                    DispatchQueue.main.async {
+                        self.topCPUApps = newCpuApps
+                        self.topMemoryApps = newMemApps
+                    }
+                }
+                
+            } catch {
+                print("Error fetching top apps: \(error)")
             }
         }
     }
     
-    private func updateFanSpeed() {
-        if let speed = smc.getFanSpeed() {
-            DispatchQueue.main.async {
-                self.fanSpeed = speed
-            }
-        }
-    }
-    
-    @MainActor
     func toggleTurboMode() {
         isTurboModeByte.toggle()
-        smc.setFanTurbo(isTurboModeByte)
+        
+        let mode = isTurboModeByte ? "0" : "1" // 0 = Boost ON (Normal), 1 = Boost OFF (Low Power)
+        
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        process.arguments = ["/usr/bin/pmset", "-a", "lowpowermode", mode]
+        
+        do {
+            try process.run()
+        } catch {
+            print("[-] Error toggling Turbo Boost: \(error)")
+        }
     }
+    
     
     deinit {
         // Timer is destroyed automatically as it's not strongly held if we invalidate it.

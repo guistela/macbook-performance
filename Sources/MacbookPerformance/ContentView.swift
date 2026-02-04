@@ -2,7 +2,7 @@ import SwiftUI
 import Charts
 
 struct ContentView: View {
-    @StateObject private var monitor = SystemMonitor()
+    @ObservedObject var monitor: SystemMonitor
     
     var body: some View {
         TabView {
@@ -227,7 +227,7 @@ struct LauncherView: View {
     
     var body: some View {
         VStack(spacing: 20) {
-            Text("App Launcher")
+            Text("Activity Mon + Launcher")
                 .font(.title)
             
             if let app = launcher.selectedApp {
@@ -289,7 +289,7 @@ struct OptimizationView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 30) {
-                Text("System Optimization")
+                Text("Activity Mon + Optimization")
                     .font(.title)
                 
                 GroupBox(label: Label("Graphics Switching", systemImage: "display")) {
@@ -331,14 +331,14 @@ struct OptimizationView: View {
                     .padding()
                 }
                 
-                GroupBox(label: Label("Thermal Management", systemImage: "thermometer.sun")) {
+                GroupBox(label: Label("Thermal & Performance Management", systemImage: "thermometer.sun")) {
                     VStack(alignment: .leading, spacing: 15) {
-                        Text("Forcing fans to maximum speed can help lower temperatures quickly.")
+                        Text("Enabling Performance Boost allows the i9 to use its full Turbo frequency. Disabling it (Low Power) significantly reduces heat.")
                             .font(.caption)
                             .foregroundColor(.secondary)
                         
                         HStack {
-                            Text("Turbo Mode (Fans @ Max)")
+                            Text("CPU Performance Boost (Turbo)")
                                 .font(.headline)
                             Spacer()
                             Toggle("", isOn: Binding(

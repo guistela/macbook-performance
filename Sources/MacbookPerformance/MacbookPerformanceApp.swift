@@ -1,12 +1,17 @@
 import SwiftUI
 
 class AppDelegate: NSObject, NSApplicationDelegate {
+    var menuBarManager: MenuBarManager?
+    @ObservedObject var monitor = SystemMonitor()
+    
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Force the app to be a regular app (shows in Dock) and activate it
         NSApp.setActivationPolicy(.regular)
+        
+        // Initialize menu bar
+        menuBarManager = MenuBarManager(monitor: monitor)
+        menuBarManager?.setupMenuBar()
+        
         NSApp.activate(ignoringOtherApps: true)
-        // Bring window to front
-        NSApp.windows.first?.makeKeyAndOrderFront(nil)
     }
 }
 
@@ -16,7 +21,7 @@ struct MacbookPerformanceApp: App {
     
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(monitor: appDelegate.monitor)
         }
         .windowStyle(.hiddenTitleBar) 
     }
